@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Flappy Bird Clone</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            background-color: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            max-width: 480px;
+            height: 100vh;
+            max-height: 640px;
+            aspect-ratio: 3 / 4;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #70c5ce;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="480" height="640"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // États du jeu
+    const STATES = {
+        START: 0,
+        PLAYING: 1,
+        GAMEOVER: 2
+    };
+    let gameState = STATES.START;
+
+    // Audio context généré dynamiquement
+    let audioCtx = null;
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    // Effets sonores procéduraux
+    function playJumpSound() {
+        try {
+            initAudio();
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(350, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(700, audioCtx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.12);
+        } catch(e){}
+    }
+
+    function playScoreSound() {
+        try {
+            initAudio();
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.08); // A5
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.25);
+        } catch(e){}
+    }
+
+    function playHitSound() {
+        try {
+            initAudio();
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+            osc.frequency.linearRampToValueAtTime(60, audioCtx.currentTime + 0.35);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.35);
+        } catch(e){}
+    }
+
+    // Configuration et Variables de jeu
+    let score = 0;
+    let highScore = localStorage.getItem('flappy_high_score') ? parseInt(localStorage.getItem('flappy_high_score')) : 0;
+    
+    const gravity = 0.35;
+    const jumpForce = -6.8;
+    let currentSpeed = 2.8;
+    const baseSpeed = 2.8;
+
+    // Oiseau
+    const bird = {
+        x: 100,
+        y: 280,
+        radius: 16,
+        velocity: 0,
+        angle: 0,
+        draw() {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.angle);
+
+            // Corps de l'oiseau (Jaune)
+            ctx.fillStyle = '#FAD02C';
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Gros œil blanc
+            ctx.fillStyle = '#FFFFFF';
+            ctx.beginPath();
+            ctx.arc(6, -5, 7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Pupille noire
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(8, -5, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bec orange
+            ctx.fillStyle = '#FF7F11';
+            ctx.beginPath();
+            ctx.moveTo(10, -1);
+            ctx.lineTo(22, 2);
+            ctx.lineTo(10, 6);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Aile blanche/jaune clair
+            ctx.fillStyle = '#FFF275';
+            ctx.beginPath();
+            ctx.ellipse(-7, 2, 9, 6, Math.PI / 8 + (this.velocity * 0.04), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.restore();
+        },
+        update() {
+            this.velocity += gravity;
+            this.y += this.velocity;
+            
+            // Rotation dynamique basée sur la vélocité
+            this.angle = Math.min(Math.max(this.velocity * 0.07, -0.6), 0.9);
+
+            // Collision Plafond & Sol
+            if (this.y - this.radius <= 0) {
+                this.y = this.radius;
+                this.velocity = 0;
+            }
+            if (this.y + this.radius >= canvas.height - 80) {
+                this.y = canvas.height - 80 - this.radius;
+                triggerGameOver();
+            }
+        },
+        jump() {
+            this.velocity = jumpForce;
+            playJumpSound();
+        },
+        reset() {
+            this.y = 280;
+            this.velocity = 0;
+            this.angle = 0;
+        }
+    };
+
+    // Gestion des tuyaux
+    let pipes = [];
+    const pipeWidth = 68;
+    const pipeGap = 145;
+    let pipeTimer = 0;
+
+    class Pipe {
+        constructor() {
+            this.x = canvas.width;
+            const minHeight = 60;
+            const maxHeight = canvas.height - 80 - pipeGap - minHeight;
+            this.topHeight = Math.floor(Math.random() * (maxHeight - minHeight + 1)) + minHeight;
+            this.bottomY = this.topHeight + pipeGap;
+            this.bottomHeight = canvas.height - 80 - this.bottomY;
+            this.passed = false;
+        }
+
+        draw() {
+            ctx.fillStyle = '#73BF2E';
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 3.5;
+
+            // Tuyau Supérieur
+            ctx.fillRect(this.x, 0, pipeWidth, this.topHeight);
+            ctx.strokeRect(this.x, 0, pipeWidth, this.topHeight);
+            // Rebord Supérieur
+            ctx.fillStyle = '#94EB3A';
+            ctx.fillRect(this.x - 4, this.topHeight - 24, pipeWidth + 8, 24);
+            ctx.strokeRect(this.x - 4, this.topHeight - 24, pipeWidth + 8, 24);
+
+            // Tuyau Inférieur
+            ctx.fillStyle = '#73BF2E';
+            ctx.fillRect(this.x, this.bottomY, pipeWidth, this.bottomHeight);
+            ctx.strokeRect(this.x, this.bottomY, pipeWidth, this.bottomHeight);
+            // Rebord Inférieur
+            ctx.fillStyle = '#94EB3A';
+            ctx.fillRect(this.x - 4, this.bottomY, pipeWidth + 8, 24);
+            ctx.strokeRect(this.x - 4, this.bottomY, pipeWidth + 8, 24);
+        }
+
+        update() {
+            this.x -= currentSpeed;
+        }
+
+        checkCollision(bird) {
+            // Collision rect/cercle approchée et fiable
+            if (bird.x + bird.radius > this.x && bird.x - bird.radius < this.x + pipeWidth) {
+                if (bird.y - bird.radius < this.topHeight || bird.y + bird.radius > this.bottomY) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    // Gestion du Décor / Arrière-plan
+    let clouds = [
+        { x: 50, y: 80, scale: 0.8 },
+        { x: 250, y: 140, scale: 1.1 },
+        { x: 400, y: 70, scale: 0.9 }
+    ];
+    let groundOffset = 0;
+
+    function drawBackground() {
+        // Ciel dégradé
+        let skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        skyGradient.addColorStop(0, '#70C5CE');
+        skyGradient.addColorStop(1, '#BFF3F8');
+        ctx.fillStyle = skyGradient;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Dessin des nuages
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        clouds.forEach(cloud => {
+            ctx.beginPath();
+            ctx.arc(cloud.x, cloud.y, 20 * cloud.scale, 0, Math.PI * 2);
+            ctx.arc(cloud.x + 15 * cloud.scale, cloud.y - 10 * cloud.scale, 25 * cloud.scale, 0, Math.PI * 2);
+            ctx.arc(cloud.x + 35 * cloud.scale, cloud.y, 20 * cloud.scale, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.fill();
+            
+            if (gameState === STATES.PLAYING) {
+                cloud.x -= currentSpeed * 0.15;
+            } else if (gameState === STATES.START) {
+                cloud.x -= 0.2;
+            }
+            if (cloud.x + 60 < 0) cloud.x = canvas.width + 20;
+        });
+
+        // Arrière-plan lointain (Silhouettes de collines/arbres stylisées)
+        ctx.fillStyle = '#83DC72';
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height - 80);
+        ctx.quadraticCurveTo(120, canvas.height - 120, 240, canvas.height - 80);
+        ctx.quadraticCurveTo(360, canvas.height - 110, 480, canvas.height - 80);
+        ctx.lineTo(480, canvas.height - 80);
+        ctx.lineTo(0, canvas.height - 80);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    function drawGround() {
+        // Sol texturé défilant
+        ctx.fillStyle = '#D6C782';
+        ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
+        
+        ctx.fillStyle = '#55A832';
+        ctx.fillRect(0, canvas.height - 80, canvas.width, 14);
+
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height - 80);
+        ctx.lineTo(canvas.width, canvas.height - 80);
+        ctx.moveTo(0, canvas.height - 66);
+        ctx.lineTo(canvas.width, canvas.height - 66);
+        ctx.stroke();
+
+        // Bandas d'herbes inclinées
+        ctx.fillStyle = '#49902B';
+        let step = 15;
+        if (gameState === STATES.PLAYING) {
+            groundOffset = (groundOffset - currentSpeed) % step;
+        }
+        for (let x = groundOffset; x < canvas.width + step; x += step) {
+            ctx.beginPath();
+            ctx.moveTo(x, canvas.height - 66);
+            ctx.lineTo(x + 8, canvas.height - 80);
+            ctx.lineTo(x + 13, canvas.height - 80);
+            ctx.lineTo(x + 5, canvas.height - 66);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+
+    // Gestion du Game Over
+    function triggerGameOver() {
+        playHitSound();
+        gameState = STATES.GAMEOVER;
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('flappy_high_score', highScore);
+        }
+    }
+
+    // Réinitialisation globale
+    function resetGame() {
+        score = 0;
+        currentSpeed = baseSpeed;
+        pipes = [];
+        pipeTimer = 0;
+        bird.reset();
+        gameState = STATES.PLAYING;
+    }
+
+    // Écrans d'affichage
+    function drawUI() {
+        if (gameState === STATES.START) {
+            // Assombrissement léger
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Titre Principal
+            ctx.fillStyle = '#FFF';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 6;
+            ctx.font = 'bold 44px "Courier New", Courier, monospace';
+            ctx.textAlign = 'center';
+            ctx.strokeText('FLAPPY BIRD', canvas.width / 2, 200);
+            ctx.fillText('FLAPPY BIRD', canvas.width / 2, 200);
+
+            // Instructions clignotantes
+            let blink = Math.floor(Date.now() / 500) % 2 === 0;
+            if (blink) {
+                ctx.fillStyle = '#FFF';
+                ctx.font = 'bold 18px "Courier New", Courier, monospace';
+                ctx.strokeText('APPUYEZ POUR JOUER', canvas.width / 2, 360);
+                ctx.fillText('APPUYEZ POUR JOUER', canvas.width / 2, 360);
+            }
+
+            // Flappy bird flottant sur l'écran d'accueil
+            bird.y = 260 + Math.sin(Date.now() * 0.005) * 12;
+            bird.draw();
+
+        } else if (gameState === STATES.PLAYING) {
+            // Affichage du score en temps réel
+            ctx.fillStyle = '#FFF';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 6;
+            ctx.font = 'bold 48px "Courier New", Courier, monospace';
+            ctx.textAlign = 'center';
+            ctx.strokeText(score, canvas.width / 2, 80);
+            ctx.fillText(score, canvas.width / 2, 80);
+
+        } else if (gameState === STATES.GAMEOVER) {
+            // Boîte de dialogue Game Over
+            ctx.fillStyle = 'rgba(0,0,0,0.4)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = '#F2F2F2';
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 5;
+            // Dessin panneau arrondi
+            ctx.beginPath();
+            ctx.roundRect(canvas.width / 2 - 150, 180, 300, 240, 12);
+            ctx.fill();
+            ctx.stroke();
+
+            // Titre Game Over
+            ctx.fillStyle = '#FF4D4D';
+            ctx.font = 'bold 30px "Courier New", Courier, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width / 2, 225);
+
+            // Scores
+            ctx.fillStyle = '#333';
+            ctx.font = 'bold 20px "Courier New", Courier, monospace';
+            ctx.fillText(`SCORE : ${score}`, canvas.width / 2, 280);
+            ctx.fillText(`MEILLEUR : ${highScore}`, canvas.width / 2, 320);
+
+            // Message pour rejouer
+            let blink = Math.floor(Date.now() / 400) % 2 === 0;
+            ctx.fillStyle = blink ? '#FF7F11' : '#333';
+            ctx.font = 'bold 16px "Courier New", Courier, monospace';
+            ctx.fillText('CLIQUEZ POUR REJOUER', canvas.width / 2, 385);
+        }
+    }
+
+    // Boucle Principale du Jeu
+    function gameLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Rendu Environnement fixe/défilant
+        drawBackground();
+
+        if (gameState === STATES.PLAYING) {
+            bird.update();
+
+            // Génération progressive des obstacles
+            pipeTimer++;
+            if (pipeTimer >= 105) { // Un tuyau environ toutes les 2 secondes à 60 FPS
+                pipes.push(new Pipe());
+                pipeTimer = 0;
+            }
+
+            // Update et Rendu des tuyaux
+            for (let i = pipes.length - 1; i >= 0; i--) {
+                pipes[i].update();
+                pipes[i].draw();
+
+                // Validation de franchissement de score
+                if (!pipes[i].passed && pipes[i].x + pipeWidth < bird.x) {
+                    pipes[i].passed = true;
+                    score++;
+                    playScoreSound();
+                    
+                    // Augmentation de la difficulté
+                    if (score > 0 && score % 10 === 0) {
+                        currentSpeed += 0.5;
+                    }
+                }
+
+                // Check collisions directes
+                if (pipes[i].checkCollision(bird)) {
+                    triggerGameOver();
+                }
+
+                // Effacer les tuyaux sortis de l'écran
+                if (pipes[i].x + pipeWidth < 0) {
+                    pipes.splice(i, 1);
+                }
+            }
+
+            bird.draw();
+        } else {
+            // Rendu passif/bloqué lors du Start ou Game Over
+            pipes.forEach(pipe => pipe.draw());
+            if (gameState === STATES.GAMEOVER) {
+                bird.draw();
+            }
+        }
+
+        drawGround();
+        drawUI();
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Gestion des interactions utilisateur (Souris, Tactile, Clavier)
+    function handleAction(e) {
+        if (e.type === 'keydown' && e.code !== 'Space') return;
+        if (e.cancelable) e.preventDefault();
+
+        if (gameState === STATES.START) {
+            initAudio();
+            resetGame();
+        } else if (gameState === STATES.PLAYING) {
+            bird.jump();
+        } else if (gameState === STATES.GAMEOVER) {
+            resetGame();
+        }
+    }
+
+    // Écouteurs d'événements physiques
+    window.addEventListener('keydown', handleAction, { passive: false });
+    canvas.addEventListener('mousedown', handleAction, { passive: false });
+    canvas.addEventListener('touchstart', handleAction, { passive: false });
+
+    // Démarrage initial de la boucle
+    gameLoop();
+</script>
+
+</body>
+</html>
